@@ -36,6 +36,27 @@ export interface QrRenderStyles {
   pupil?: QrPupilStyle;
 }
 
+export type QrCenterContentMode = 'none' | 'logo' | 'text';
+
+export interface QrCenterLogoOptions {
+  src: string;
+  crossOrigin?: string;
+}
+
+export interface QrCenterTextOptions {
+  value: string;
+  color?: string;
+  fontFamily?: string;
+  fontWeight?: string | number;
+}
+
+export interface QrCenterContentOptions {
+  mode?: QrCenterContentMode;
+  hideModulesBehind?: boolean;
+  logo?: QrCenterLogoOptions;
+  text?: QrCenterTextOptions;
+}
+
 export interface QrEncodeOptions {
   errorCorrection?: QrErrorCorrectionLevel;
   version?: number;
@@ -52,6 +73,7 @@ export interface QrRenderOptions {
   darkColor?: string;
   lightColor?: string;
   styles?: QrRenderStyles;
+  center?: QrCenterContentOptions;
 }
 
 export interface QrMatrix {

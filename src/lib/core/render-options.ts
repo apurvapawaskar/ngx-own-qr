@@ -1,7 +1,9 @@
 import type {
+  QrCenterContentMode,
   QrEyeShape,
   QrGradientColor,
   QrImageDataLike,
+  QrCenterTextOptions,
   QrModuleShape,
   QrPupilShape,
   QrRenderColor,
@@ -37,6 +39,21 @@ export interface NormalizedStyles {
   pupilColor: QrRenderColor;
 }
 
+export interface NormalizedCenterTextOptions {
+  value: string;
+  color: string;
+  fontFamily: string;
+  fontWeight: string | number;
+}
+
+export interface NormalizedCenterOptions {
+  mode: QrCenterContentMode;
+  hideModulesBehind: boolean;
+  logoSrc?: string;
+  logoCrossOrigin?: string;
+  text?: NormalizedCenterTextOptions;
+}
+
 export interface NormalizedRenderOptions {
   margin: number;
   scale: number;
@@ -45,7 +62,9 @@ export interface NormalizedRenderOptions {
   darkRgba: Rgba;
   lightRgba: Rgba;
   styles: NormalizedStyles;
+  center: NormalizedCenterOptions;
   hasStyles: boolean;
+  hasCenterContent: boolean;
   usesGradientStyles: boolean;
   usesShapedStyles: boolean;
 }
@@ -67,6 +86,7 @@ export function normalizeRenderOptions(options: QrRenderOptions = {}): Normalize
   const darkColor = options.darkColor ?? '#000000';
   const lightColor = options.lightColor ?? '#ffffff';
   const styles = normalizeStyles(options, darkColor);
+  const center = normalizeCenterOptions(options, darkColor);
   const hasStyles = hasStyleOverrides(options);
 
   return {
@@ -77,7 +97,9 @@ export function normalizeRenderOptions(options: QrRenderOptions = {}): Normalize
     darkRgba: parseColor(darkColor, [0, 0, 0, 255]),
     lightRgba: parseColor(lightColor, [255, 255, 255, 255]),
     styles,
+    center,
     hasStyles,
+    hasCenterContent: center.mode !== 'none',
     usesGradientStyles:
       hasGradientColor(styles.moduleColor) ||
       hasGradientColor(styles.eyeColor) ||
@@ -100,6 +122,63 @@ export function hasStyleOverrides(options: QrRenderOptions): boolean {
     styles.pupil?.shape !== undefined ||
     styles.pupil?.color !== undefined
   );
+}
+
+function normalizeCenterOptions(options: QrRenderOptions, darkColor: string): NormalizedCenterOptions {
+  const center = options.center;
+  const mode = center?.mode ?? inferCenterMode(center);
+  const normalizedMode = mode === 'logo' || mode === 'text' ? mode : 'none';
+
+  const logoSrc = center?.logo?.src?.trim();
+  const logoCrossOrigin = center?.logo?.crossOrigin;
+  if (normalizedMode === 'logo' && !logoSrc) {
+    throw new Error('QR center logo mode requires center.logo.src.');
+  }
+
+  const text = normalizeCenterText(center?.text, darkColor);
+  if (normalizedMode === 'text' && !text) {
+    throw new Error('QR center text mode requires center.text.value.');
+  }
+
+  return {
+    mode: normalizedMode,
+    hideModulesBehind: center?.hideModulesBehind ?? true,
+    logoSrc,
+    logoCrossOrigin,
+    text,
+  };
+}
+
+function inferCenterMode(center: QrRenderOptions['center'] | undefined): QrCenterContentMode {
+  if (!center) {
+    return 'none';
+  }
+  if (center.mode) {
+    return center.mode;
+  }
+  if (center.logo?.src?.trim()) {
+    return 'logo';
+  }
+  if (center.text?.value?.trim()) {
+    return 'text';
+  }
+  return 'none';
+}
+
+function normalizeCenterText(text: QrCenterTextOptions | undefined, fallbackColor: string): NormalizedCenterTextOptions | undefined {
+  if (!text) {
+    return undefined;
+  }
+  const value = text.value?.trim();
+  if (!value) {
+    return undefined;
+  }
+  return {
+    value,
+    color: text.color ?? fallbackColor,
+    fontFamily: text.fontFamily ?? 'sans-serif',
+    fontWeight: text.fontWeight ?? 600,
+  };
 }
 
 function normalizeStyles(options: QrRenderOptions, darkColor: string): NormalizedStyles {
@@ -225,7 +304,7 @@ export function getCanvasContext(canvas: CanvasTarget): CanvasContext {
 }
 
 export function isPlainRender(options: NormalizedRenderOptions): boolean {
-  return !options.hasStyles;
+  return !options.hasStyles && !options.hasCenterContent;
 }
 
 export function getFinderPart(row: number, col: number, size: number): FinderPart {

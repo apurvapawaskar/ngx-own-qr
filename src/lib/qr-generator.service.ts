@@ -1,6 +1,15 @@
 import { Injectable } from '@angular/core';
 
-import { encode, renderCanvas, renderDataUrl, renderImageData, renderPngBlob, renderSvg } from 'ngx-own-qr/core';
+import {
+  encode,
+  renderCanvas,
+  renderCanvasAsync,
+  renderDataUrl,
+  renderImageData,
+  renderImageDataAsync,
+  renderPngBlob,
+  renderSvg,
+} from 'ngx-own-qr/core';
 import type { QrEncodeOptions, QrMatrix, QrRenderOptions } from 'ngx-own-qr/core';
 
 @Injectable({ providedIn: 'root' })
@@ -21,8 +30,20 @@ export class QrGeneratorService {
     return renderCanvas(input, canvas, options);
   }
 
+  toCanvasAsync(
+    input: string | QrMatrix,
+    canvas?: HTMLCanvasElement | OffscreenCanvas,
+    options: QrEncodeOptions & QrRenderOptions = {},
+  ): Promise<HTMLCanvasElement | OffscreenCanvas> {
+    return renderCanvasAsync(input, canvas, options);
+  }
+
   toImageData(input: string | QrMatrix, options: QrEncodeOptions & QrRenderOptions = {}) {
     return renderImageData(input, options);
+  }
+
+  toImageDataAsync(input: string | QrMatrix, options: QrEncodeOptions & QrRenderOptions = {}) {
+    return renderImageDataAsync(input, options);
   }
 
   toPngBlob(input: string | QrMatrix, options: QrEncodeOptions & QrRenderOptions = {}): Promise<Blob> {
