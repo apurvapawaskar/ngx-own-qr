@@ -3,6 +3,12 @@
     "target": "ES2022",
     "module": "ES2022",
     "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "ngx-own-qr/core": ["src/lib/core.entry.ts"],
+      "ngx-own-qr/generator": ["src/lib/generator.entry.ts"],
+      "ngx-own-qr/scanner": ["src/lib/scanner.entry.ts"]
+    },
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "declaration": false,
     "sourceMap": true,
@@ -13,6 +19,7 @@
     "forceConsistentCasingInFileNames": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "ignoreDeprecations": "6.0",
     "isolatedModules": true,
     "useDefineForClassFields": false
   },

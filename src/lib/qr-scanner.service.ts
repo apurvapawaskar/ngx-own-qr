@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core';
 
-import { scan, scanFrame, startVideoScan } from './core/api-scan';
-import type { QrImageDataLike, QrScanHandlers, QrScanOptions, QrScanResult, QrScanSession, QrSource } from './core/types';
+import { scan, scanFrame, startVideoScan } from 'ngx-own-qr/core';
+import type { QrImageDataLike, QrScanHandlers, QrScanOptions, QrScanResult, QrScanSession, QrSource } from 'ngx-own-qr/core';
 
 @Injectable({ providedIn: 'root' })
 export class QrScannerService {

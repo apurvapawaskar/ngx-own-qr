@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core';
 
-import { encode, renderCanvas, renderDataUrl, renderImageData, renderPngBlob, renderSvg } from './core/api';
-import type { QrEncodeOptions, QrMatrix, QrRenderOptions } from './core/types';
+import { encode, renderCanvas, renderDataUrl, renderImageData, renderPngBlob, renderSvg } from 'ngx-own-qr/core';
+import type { QrEncodeOptions, QrMatrix, QrRenderOptions } from 'ngx-own-qr/core';
 
 @Injectable({ providedIn: 'root' })
 export class QrGeneratorService {

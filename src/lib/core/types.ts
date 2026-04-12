@@ -1,6 +1,41 @@
 export type QrErrorCorrectionLevel = 'L' | 'M' | 'Q' | 'H';
 export type QrSegmentMode = 'numeric' | 'alphanumeric' | 'byte';
 
+export type QrGradientType = 'linear' | 'circular';
+
+export interface QrGradientColor {
+  type: QrGradientType;
+  colors: string[];
+  rotation?: number;
+}
+
+export type QrRenderColor = string | QrGradientColor;
+
+export type QrModuleShape = 'square' | 'rounded' | 'extra-rounded' | 'diamond' | 'splash' | 'liquid' | 'liquid-flow';
+export type QrEyeShape = 'square' | 'rounded' | 'extra-rounded';
+export type QrPupilShape = 'square' | 'rounded' | 'extra-rounded' | 'diamond';
+
+export interface QrModuleStyle {
+  color?: QrRenderColor;
+  shape?: QrModuleShape;
+}
+
+export interface QrEyeStyle {
+  color?: QrRenderColor;
+  shape?: QrEyeShape;
+}
+
+export interface QrPupilStyle {
+  color?: QrRenderColor;
+  shape?: QrPupilShape;
+}
+
+export interface QrRenderStyles {
+  module?: QrModuleStyle;
+  eye?: QrEyeStyle;
+  pupil?: QrPupilStyle;
+}
+
 export interface QrEncodeOptions {
   errorCorrection?: QrErrorCorrectionLevel;
   version?: number;
@@ -16,6 +51,7 @@ export interface QrRenderOptions {
   scale?: number;
   darkColor?: string;
   lightColor?: string;
+  styles?: QrRenderStyles;
 }
 
 export interface QrMatrix {

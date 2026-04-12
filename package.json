@@ -14,6 +14,17 @@
     "barcode-scanner",
     "typescript"
   ],
+  "files": [
+    "esm2022/**/*.mjs",
+    "fesm2022/**/*.mjs",
+    "core/**/*.d.ts",
+    "generator/**/*.d.ts",
+    "scanner/**/*.d.ts",
+    "index.d.ts",
+    "public-api.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
   "publishConfig": {
     "access": "public"
   },
