@@ -14,6 +14,7 @@ export type QrRenderColor = string | QrGradientColor;
 export type QrModuleShape = 'square' | 'rounded' | 'extra-rounded' | 'diamond' | 'splash' | 'liquid' | 'liquid-flow';
 export type QrEyeShape = 'square' | 'rounded' | 'extra-rounded';
 export type QrPupilShape = 'square' | 'rounded' | 'extra-rounded' | 'diamond';
+export type QrBorderShape = 'square' | 'circle';
 
 export interface QrModuleStyle {
   color?: QrRenderColor;
@@ -57,6 +58,19 @@ export interface QrCenterContentOptions {
   text?: QrCenterTextOptions;
 }
 
+export interface QrBorderOptions {
+  shape?: QrBorderShape;
+  prefill?: boolean;
+  color?: string;
+  opacity?: number;
+  innerColor?: string;
+  innerOpacity?: number;
+  outerColor?: string;
+  outerOpacity?: number;
+  width?: number;
+  innerGap?: number;
+}
+
 export interface QrEncodeOptions {
   errorCorrection?: QrErrorCorrectionLevel;
   version?: number;
@@ -74,6 +88,7 @@ export interface QrRenderOptions {
   lightColor?: string;
   styles?: QrRenderStyles;
   center?: QrCenterContentOptions;
+  border?: QrBorderOptions;
 }
 
 export interface QrMatrix {

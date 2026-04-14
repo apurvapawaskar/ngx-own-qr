@@ -1,4 +1,6 @@
 import type {
+  QrBorderOptions,
+  QrBorderShape,
   QrCenterContentMode,
   QrEyeShape,
   QrGradientColor,
@@ -54,6 +56,19 @@ export interface NormalizedCenterOptions {
   text?: NormalizedCenterTextOptions;
 }
 
+export interface NormalizedBorderOptions {
+  shape: QrBorderShape;
+  prefill: boolean;
+  color: string;
+  opacity: number;
+  innerColor?: string;
+  innerOpacity: number;
+  outerColor?: string;
+  outerOpacity: number;
+  width: number;
+  innerGap: number;
+}
+
 export interface NormalizedRenderOptions {
   margin: number;
   scale: number;
@@ -63,11 +78,57 @@ export interface NormalizedRenderOptions {
   lightRgba: Rgba;
   styles: NormalizedStyles;
   center: NormalizedCenterOptions;
+  border?: NormalizedBorderOptions;
   hasStyles: boolean;
+  hasBorder: boolean;
   hasCenterContent: boolean;
   usesGradientStyles: boolean;
   usesShapedStyles: boolean;
 }
+
+/**
+ * Immutable validation and clamping limits used by QR render options.
+ *
+ * Use this constant in consumer code to align UI constraints (sliders, inputs, guards)
+ * with the library's internal normalization rules.
+ *
+ * `margin.min`:
+ * Minimum allowed render margin in modules.
+ *
+ * `scale.min`:
+ * Minimum allowed render scale.
+ *
+ * `border.width.min` / `border.width.max`:
+ * Internal clamp range for `QrBorderOptions.width`.
+ *
+ * `border.innerGap.min` / `border.innerGap.max`:
+ * Internal clamp range for `QrBorderOptions.innerGap`.
+ *
+ * `border.opacity.min` / `border.opacity.max`:
+ * Allowed numeric range for border opacity values.
+ */
+export const QR_RENDER_OPTION_LIMITS = {
+  margin: {
+    min: 0,
+  },
+  scale: {
+    min: 1,
+  },
+  border: {
+    width: {
+      min: 1,
+      max: 10,
+    },
+    innerGap: {
+      min: 0,
+      max: 4,
+    },
+    opacity: {
+      min: 0,
+      max: 1,
+    },
+  },
+} as const;
 
 export const FLOW_OVERLAP_RATIO = 0.08;
 
@@ -76,10 +137,10 @@ let gradientIdCounter = 0;
 export function normalizeRenderOptions(options: QrRenderOptions = {}): NormalizedRenderOptions {
   const margin = options.margin ?? 4;
   const scale = options.scale ?? 4;
-  if (!Number.isInteger(margin) || margin < 0) {
+  if (!Number.isInteger(margin) || margin < QR_RENDER_OPTION_LIMITS.margin.min) {
     throw new Error(`QR margin must be a non-negative integer. Received ${margin}.`);
   }
-  if (!Number.isInteger(scale) || scale <= 0) {
+  if (!Number.isInteger(scale) || scale < QR_RENDER_OPTION_LIMITS.scale.min) {
     throw new Error(`QR scale must be a positive integer. Received ${scale}.`);
   }
 
@@ -87,6 +148,7 @@ export function normalizeRenderOptions(options: QrRenderOptions = {}): Normalize
   const lightColor = options.lightColor ?? '#ffffff';
   const styles = normalizeStyles(options, darkColor);
   const center = normalizeCenterOptions(options, darkColor);
+  const border = normalizeBorderOptions(options.border, darkColor);
   const hasStyles = hasStyleOverrides(options);
 
   return {
@@ -98,7 +160,9 @@ export function normalizeRenderOptions(options: QrRenderOptions = {}): Normalize
     lightRgba: parseColor(lightColor, [255, 255, 255, 255]),
     styles,
     center,
+    border,
     hasStyles,
+    hasBorder: border !== undefined,
     hasCenterContent: center.mode !== 'none',
     usesGradientStyles:
       hasGradientColor(styles.moduleColor) ||
@@ -106,6 +170,51 @@ export function normalizeRenderOptions(options: QrRenderOptions = {}): Normalize
       hasGradientColor(styles.pupilColor),
     usesShapedStyles:
       styles.moduleShape !== 'square' || styles.eyeShape !== 'square' || styles.pupilShape !== 'square',
+  };
+}
+
+function normalizeBorderOptions(border: QrBorderOptions | undefined, fallbackColor: string): NormalizedBorderOptions | undefined {
+  if (!border) {
+    return undefined;
+  }
+
+  const shape = border.shape === 'circle' ? 'circle' : 'square';
+  const prefill = border.prefill ?? true;
+  const width = border.width ?? 5;
+  const requestedInnerGap = border.innerGap ?? 0;
+  const opacity = border.opacity ?? 1;
+  const innerOpacity = border.innerOpacity ?? opacity;
+  const outerOpacity = border.outerOpacity ?? opacity;
+
+  if (!Number.isFinite(width) || width <= 0) {
+    throw new Error(`QR border width must be a positive number. Received ${width}.`);
+  }
+  if (!Number.isFinite(requestedInnerGap) || requestedInnerGap < 0) {
+    throw new Error(`QR border innerGap must be a non-negative number. Received ${requestedInnerGap}.`);
+  }
+  if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) {
+    throw new Error(`QR border opacity must be between 0 and 1. Received ${opacity}.`);
+  }
+  if (!Number.isFinite(innerOpacity) || innerOpacity < 0 || innerOpacity > 1) {
+    throw new Error(`QR border innerOpacity must be between 0 and 1. Received ${innerOpacity}.`);
+  }
+  if (!Number.isFinite(outerOpacity) || outerOpacity < 0 || outerOpacity > 1) {
+    throw new Error(`QR border outerOpacity must be between 0 and 1. Received ${outerOpacity}.`);
+  }
+
+  const clampedWidth = Math.min(QR_RENDER_OPTION_LIMITS.border.width.max, Math.max(QR_RENDER_OPTION_LIMITS.border.width.min, width));
+  const innerGap = Math.min(QR_RENDER_OPTION_LIMITS.border.innerGap.max, requestedInnerGap);
+  return {
+    shape,
+    prefill,
+    color: border.color ?? fallbackColor,
+    opacity,
+    innerColor: border.innerColor,
+    innerOpacity,
+    outerColor: border.outerColor,
+    outerOpacity,
+    width: clampedWidth,
+    innerGap,
   };
 }
 
@@ -304,7 +413,7 @@ export function getCanvasContext(canvas: CanvasTarget): CanvasContext {
 }
 
 export function isPlainRender(options: NormalizedRenderOptions): boolean {
-  return !options.hasStyles && !options.hasCenterContent;
+  return !options.hasStyles && !options.hasCenterContent && !options.hasBorder;
 }
 
 export function getFinderPart(row: number, col: number, size: number): FinderPart {

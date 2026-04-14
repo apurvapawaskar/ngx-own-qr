@@ -15,6 +15,9 @@ import {
   parseSolidStyleColor,
   putPixelsOnCanvas,
   type CanvasTarget,
+  type CanvasPaint,
+  type CornerRadii,
+  type NormalizedBorderOptions,
   type NormalizedCenterOptions,
   type NormalizedRenderOptions,
   type RenderArea,
@@ -38,8 +41,481 @@ interface OverlayBox {
   radius: number;
 }
 
+interface RenderLayout {
+  totalModules: number;
+  qrOffsetX: number;
+  qrOffsetY: number;
+  squareBorder?: {
+    outerX: number;
+    outerY: number;
+    outerSize: number;
+    innerX: number;
+    innerY: number;
+    innerSize: number;
+  };
+  circleBorder?: {
+    centerX: number;
+    centerY: number;
+    innerRadius: number;
+    outerRadius: number;
+  };
+}
+
 const CENTER_BOX_RATIO = 0.22;
 const CENTER_LOGO_RADIUS_RATIO = 0.12;
+const CIRCLE_PATCH_PATTERN_TILE_SCALE = 0.86;
+const CIRCLE_PATCH_PATTERN_OPACITY = 0.62;
+const CIRCLE_PATCH_QR_GAP = 0.18;
+const CIRCLE_PATCH_EDGE_INSET = 0.2;
+const CIRCLE_PATCH_SCATTER_DENSITY = 0.54;
+const CIRCLE_PATCH_MAX_NEIGHBORS = 2;
+const CIRCLE_PATCH_EMPTY_POCKET_FILL_PROBABILITY = 0.84;
+const CIRCLE_PATCH_SOFT_POCKET_FILL_PROBABILITY = 0.26;
+
+interface PatternCell {
+  row: number;
+  col: number;
+  x: number;
+  y: number;
+}
+
+function resolveRenderLayout(matrixSize: number, options: NormalizedRenderOptions): RenderLayout {
+  const border = options.border;
+  if (!border) {
+    const totalModules = matrixSize + options.margin * 2;
+    return {
+      totalModules,
+      qrOffsetX: options.margin,
+      qrOffsetY: options.margin,
+    };
+  }
+
+  if (border.shape === 'circle') {
+    const innerRadius = (matrixSize * Math.SQRT2) / 2 + border.innerGap;
+    const outerRadius = innerRadius + border.width;
+    const center = options.margin + outerRadius;
+    return {
+      totalModules: 2 * (options.margin + outerRadius),
+      qrOffsetX: center - matrixSize / 2,
+      qrOffsetY: center - matrixSize / 2,
+      circleBorder: {
+        centerX: center,
+        centerY: center,
+        innerRadius,
+        outerRadius,
+      },
+    };
+  }
+
+  const borderBand = border.innerGap + border.width;
+  const qrOffset = options.margin + borderBand;
+  return {
+    totalModules: matrixSize + 2 * (options.margin + borderBand),
+    qrOffsetX: qrOffset,
+    qrOffsetY: qrOffset,
+    squareBorder: {
+      outerX: options.margin,
+      outerY: options.margin,
+      outerSize: matrixSize + 2 * borderBand,
+      innerX: qrOffset - border.innerGap,
+      innerY: qrOffset - border.innerGap,
+      innerSize: matrixSize + border.innerGap * 2,
+    },
+  };
+}
+
+function resolveBorderLayerWidths(border: NormalizedBorderOptions): { outer: number; inner: number } {
+  const hasOuter = Boolean(border.outerColor);
+  const hasInner = Boolean(border.innerColor);
+  if (!hasOuter && !hasInner) {
+    return { outer: 0, inner: 0 };
+  }
+
+  const desiredOuter = hasOuter ? border.width * 0.28 : 0;
+  const desiredInner = hasInner ? border.width * 0.28 : 0;
+  const minBaseBand = Math.min(Math.max(border.width * 0.2, 0.35), border.width);
+  const availableForLayers = Math.max(0, border.width - minBaseBand);
+  const desiredTotal = desiredOuter + desiredInner;
+
+  if (desiredTotal <= 0 || availableForLayers <= 0) {
+    return { outer: 0, inner: 0 };
+  }
+
+  const scale = Math.min(1, availableForLayers / desiredTotal);
+  return {
+    outer: desiredOuter * scale,
+    inner: desiredInner * scale,
+  };
+}
+
+function fillCanvasRectRing(
+  context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  outerX: number,
+  outerY: number,
+  outerSize: number,
+  innerX: number,
+  innerY: number,
+  innerSize: number,
+  fillStyle: string,
+  opacity: number,
+): void {
+  context.save();
+  context.globalAlpha = Math.max(0, Math.min(1, opacity));
+  context.fillStyle = fillStyle;
+  context.beginPath();
+  context.rect(outerX, outerY, outerSize, outerSize);
+  context.rect(innerX, innerY, innerSize, innerSize);
+  context.fill('evenodd');
+  context.restore();
+}
+
+function fillCanvasCircleRing(
+  context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  centerX: number,
+  centerY: number,
+  outerRadius: number,
+  innerRadius: number,
+  fillStyle: string,
+  opacity: number,
+): void {
+  context.save();
+  context.globalAlpha = Math.max(0, Math.min(1, opacity));
+  context.fillStyle = fillStyle;
+  context.beginPath();
+  context.arc(centerX, centerY, outerRadius, 0, Math.PI * 2);
+  context.arc(centerX, centerY, innerRadius, 0, Math.PI * 2, true);
+  context.fill('evenodd');
+  context.restore();
+}
+
+function fillCanvasPatternTile(
+  context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  shape: NormalizedRenderOptions['styles']['moduleShape'],
+  x: number,
+  y: number,
+  size: number,
+  paint: CanvasPaint,
+  opacity: number,
+  row: number,
+  col: number,
+  cornerRadii?: CornerRadii,
+): void {
+  context.save();
+  context.globalAlpha = Math.max(0, Math.min(1, opacity));
+  fillCanvasShape(context, shape, x, y, size, paint, row, col, cornerRadii);
+  context.restore();
+}
+
+function getPatternCellKey(row: number, col: number): string {
+  return `${row}:${col}`;
+}
+
+function getPatternScatterNoise(row: number, col: number, salt: number): number {
+  let hash = Math.imul(row ^ Math.imul(salt + 1, 374761393), 668265263);
+  hash ^= Math.imul(col ^ Math.imul(salt + 1, 1274126177), 2246822519);
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 1274126177);
+  hash ^= hash >>> 16;
+  return (hash >>> 0) / 4294967296;
+}
+
+function countFilledPatternNeighbors(filled: Set<string>, row: number, col: number): number {
+  let count = 0;
+  for (let rowOffset = -1; rowOffset <= 1; rowOffset += 1) {
+    for (let colOffset = -1; colOffset <= 1; colOffset += 1) {
+      if (rowOffset === 0 && colOffset === 0) {
+        continue;
+      }
+      if (filled.has(getPatternCellKey(row + rowOffset, col + colOffset))) {
+        count += 1;
+      }
+    }
+  }
+  return count;
+}
+
+function resolveCirclePatchPatternCells(
+  matrix: QrMatrix,
+  layout: RenderLayout,
+  qrAreaInModules: RenderArea,
+): PatternCell[] {
+  if (!layout.circleBorder) {
+    return [];
+  }
+
+  const circle = layout.circleBorder;
+  const innerRadiusLimit = Math.max(0, circle.innerRadius - CIRCLE_PATCH_EDGE_INSET);
+  const radiusSq = innerRadiusLimit * innerRadiusLimit;
+
+  const minCol = Math.floor(circle.centerX - innerRadiusLimit - qrAreaInModules.x - 1);
+  const maxCol = Math.ceil(circle.centerX + innerRadiusLimit - qrAreaInModules.x + 1);
+  const minRow = Math.floor(circle.centerY - innerRadiusLimit - qrAreaInModules.y - 1);
+  const maxRow = Math.ceil(circle.centerY + innerRadiusLimit - qrAreaInModules.y + 1);
+
+  const cells: PatternCell[] = [];
+  const tileInset = (1 - CIRCLE_PATCH_PATTERN_TILE_SCALE) / 2;
+
+  for (let row = minRow; row <= maxRow; row += 1) {
+    for (let col = minCol; col <= maxCol; col += 1) {
+      const localCenterX = col + 0.5;
+      const localCenterY = row + 0.5;
+
+      const isNearQr =
+        localCenterX > -CIRCLE_PATCH_QR_GAP &&
+        localCenterX < matrix.size + CIRCLE_PATCH_QR_GAP &&
+        localCenterY > -CIRCLE_PATCH_QR_GAP &&
+        localCenterY < matrix.size + CIRCLE_PATCH_QR_GAP;
+      if (isNearQr) {
+        continue;
+      }
+
+      const absoluteCenterX = qrAreaInModules.x + localCenterX;
+      const absoluteCenterY = qrAreaInModules.y + localCenterY;
+      const dx = absoluteCenterX - circle.centerX;
+      const dy = absoluteCenterY - circle.centerY;
+      if (dx * dx + dy * dy > radiusSq) {
+        continue;
+      }
+
+      cells.push({
+        row,
+        col,
+        x: qrAreaInModules.x + col + tileInset,
+        y: qrAreaInModules.y + row + tileInset,
+      });
+    }
+  }
+
+  if (cells.length === 0) {
+    return cells;
+  }
+
+  const ordered = [...cells].sort(
+    (left, right) => getPatternScatterNoise(left.row, left.col, 11) - getPatternScatterNoise(right.row, right.col, 11),
+  );
+  const filled = new Set<string>();
+
+  for (const cell of ordered) {
+    if (getPatternScatterNoise(cell.row, cell.col, 17) > CIRCLE_PATCH_SCATTER_DENSITY) {
+      continue;
+    }
+
+    const neighbors = countFilledPatternNeighbors(filled, cell.row, cell.col);
+    if (neighbors > CIRCLE_PATCH_MAX_NEIGHBORS) {
+      continue;
+    }
+
+    if (neighbors === 2) {
+      const hasHorizontalBridge =
+        filled.has(getPatternCellKey(cell.row, cell.col - 1)) && filled.has(getPatternCellKey(cell.row, cell.col + 1));
+      const hasVerticalBridge =
+        filled.has(getPatternCellKey(cell.row - 1, cell.col)) && filled.has(getPatternCellKey(cell.row + 1, cell.col));
+      if ((hasHorizontalBridge || hasVerticalBridge) && getPatternScatterNoise(cell.row, cell.col, 23) > 0.35) {
+        continue;
+      }
+    }
+
+    filled.add(getPatternCellKey(cell.row, cell.col));
+  }
+
+  for (const cell of ordered) {
+    const key = getPatternCellKey(cell.row, cell.col);
+    if (filled.has(key)) {
+      continue;
+    }
+
+    const neighbors = countFilledPatternNeighbors(filled, cell.row, cell.col);
+    const noise = getPatternScatterNoise(cell.row, cell.col, 29);
+    if (neighbors === 0 && noise < CIRCLE_PATCH_EMPTY_POCKET_FILL_PROBABILITY) {
+      filled.add(key);
+      continue;
+    }
+
+    if (neighbors === 1 && noise < CIRCLE_PATCH_SOFT_POCKET_FILL_PROBABILITY) {
+      filled.add(key);
+    }
+  }
+
+  return cells.filter((cell) => filled.has(getPatternCellKey(cell.row, cell.col)));
+}
+
+function getCirclePatchPatternRadii(
+  shape: NormalizedRenderOptions['styles']['moduleShape'],
+  filledCells: Set<string>,
+  row: number,
+  col: number,
+  size: number,
+): CornerRadii | undefined {
+  if (shape !== 'liquid' && shape !== 'liquid-flow') {
+    return undefined;
+  }
+
+  const has = (r: number, c: number) => filledCells.has(getPatternCellKey(r, c));
+  const up = has(row - 1, col);
+  const right = has(row, col + 1);
+  const down = has(row + 1, col);
+  const left = has(row, col - 1);
+  const radius = size * 0.45;
+
+  if (shape === 'liquid-flow') {
+    const topLeftDiag = has(row - 1, col - 1);
+    const topRightDiag = has(row - 1, col + 1);
+    const bottomRightDiag = has(row + 1, col + 1);
+    const bottomLeftDiag = has(row + 1, col - 1);
+    return {
+      topLeft: !up && !left && !topLeftDiag ? radius : 0,
+      topRight: !up && !right && !topRightDiag ? radius : 0,
+      bottomRight: !down && !right && !bottomRightDiag ? radius : 0,
+      bottomLeft: !down && !left && !bottomLeftDiag ? radius : 0,
+    };
+  }
+
+  return {
+    topLeft: !up && !left ? radius : 0,
+    topRight: !up && !right ? radius : 0,
+    bottomRight: !down && !right ? radius : 0,
+    bottomLeft: !down && !left ? radius : 0,
+  };
+}
+
+function drawCirclePatchPatternOnCanvas(
+  context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  matrix: QrMatrix,
+  options: NormalizedRenderOptions,
+  layout: RenderLayout,
+  qrAreaInModules: RenderArea,
+  cellSize: number,
+  modulePaint: CanvasPaint,
+): void {
+  if (!layout.circleBorder || options.border?.prefill === false) {
+    return;
+  }
+
+  const patternCells = resolveCirclePatchPatternCells(matrix, layout, qrAreaInModules);
+  if (patternCells.length === 0) {
+    return;
+  }
+
+  const filled = new Set<string>(patternCells.map((cell) => getPatternCellKey(cell.row, cell.col)));
+  const tileSize = CIRCLE_PATCH_PATTERN_TILE_SCALE * cellSize;
+
+  for (const cell of patternCells) {
+    const shape = options.styles.moduleShape;
+    const radii = getCirclePatchPatternRadii(shape, filled, cell.row, cell.col, tileSize);
+    fillCanvasPatternTile(
+      context,
+      shape,
+      cell.x * cellSize,
+      cell.y * cellSize,
+      tileSize,
+      modulePaint,
+      CIRCLE_PATCH_PATTERN_OPACITY,
+      cell.row,
+      cell.col,
+      radii,
+    );
+  }
+}
+
+
+function drawBorderOnCanvas(
+  context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  border: NormalizedBorderOptions | undefined,
+  layout: RenderLayout,
+  cellSize: number,
+): void {
+  if (!border) {
+    return;
+  }
+
+  const layerWidths = resolveBorderLayerWidths(border);
+  const outerLayer = layerWidths.outer;
+  const innerLayer = layerWidths.inner;
+
+  if (layout.squareBorder) {
+    const outer = layout.squareBorder;
+    fillCanvasRectRing(
+      context,
+      outer.outerX * cellSize,
+      outer.outerY * cellSize,
+      outer.outerSize * cellSize,
+      outer.innerX * cellSize,
+      outer.innerY * cellSize,
+      outer.innerSize * cellSize,
+      border.color,
+      border.opacity,
+    );
+
+    if (border.outerColor && outerLayer > 0) {
+      const inset = outerLayer * cellSize;
+      fillCanvasRectRing(
+        context,
+        outer.outerX * cellSize,
+        outer.outerY * cellSize,
+        outer.outerSize * cellSize,
+        outer.outerX * cellSize + inset,
+        outer.outerY * cellSize + inset,
+        outer.outerSize * cellSize - inset * 2,
+        border.outerColor,
+        border.outerOpacity,
+      );
+    }
+
+    if (border.innerColor && innerLayer > 0) {
+      fillCanvasRectRing(
+        context,
+        (outer.innerX - innerLayer) * cellSize,
+        (outer.innerY - innerLayer) * cellSize,
+        (outer.innerSize + innerLayer * 2) * cellSize,
+        outer.innerX * cellSize,
+        outer.innerY * cellSize,
+        outer.innerSize * cellSize,
+        border.innerColor,
+        border.innerOpacity,
+      );
+    }
+    return;
+  }
+
+  if (!layout.circleBorder) {
+    return;
+  }
+
+  const circle = layout.circleBorder;
+  fillCanvasCircleRing(
+    context,
+    circle.centerX * cellSize,
+    circle.centerY * cellSize,
+    circle.outerRadius * cellSize,
+    circle.innerRadius * cellSize,
+    border.color,
+    border.opacity,
+  );
+
+  if (border.outerColor && outerLayer > 0) {
+    fillCanvasCircleRing(
+      context,
+      circle.centerX * cellSize,
+      circle.centerY * cellSize,
+      circle.outerRadius * cellSize,
+      (circle.outerRadius - outerLayer) * cellSize,
+      border.outerColor,
+      border.outerOpacity,
+    );
+  }
+
+  if (border.innerColor && innerLayer > 0) {
+    fillCanvasCircleRing(
+      context,
+      circle.centerX * cellSize,
+      circle.centerY * cellSize,
+      (circle.innerRadius + innerLayer) * cellSize,
+      circle.innerRadius * cellSize,
+      border.innerColor,
+      border.innerOpacity,
+    );
+  }
+}
 
 function resolveMatrix(input: QrRenderableInput, options: QrEncodeOptions & QrRenderOptions): QrMatrix {
   const logoMode = isLogoModeRequested(options);
@@ -255,7 +731,7 @@ export function toImageData(input: QrRenderableInput, options: QrEncodeOptions &
     return createPlainImageData(matrix, renderOptions);
   }
 
-  if (!renderOptions.usesGradientStyles && !renderOptions.usesShapedStyles) {
+  if (!renderOptions.usesGradientStyles && !renderOptions.usesShapedStyles && !renderOptions.hasBorder) {
     return createSquareStyledImageData(matrix, renderOptions);
   }
 
@@ -282,8 +758,8 @@ function renderStyledCanvas(
   logoImage?: CanvasImageSource,
 ): CanvasTarget {
   const cellSize = options.scale;
-  const totalCells = matrix.size + options.margin * 2;
-  const outputSize = totalCells * cellSize;
+  const layout = resolveRenderLayout(matrix.size, options);
+  const outputSize = layout.totalModules * cellSize;
   const canvas = targetCanvas ?? getCanvasFactory().create(outputSize, outputSize);
   canvas.width = outputSize;
   canvas.height = outputSize;
@@ -297,14 +773,14 @@ function renderStyledCanvas(
   }
 
   const qrArea: RenderArea = {
-    x: options.margin * cellSize,
-    y: options.margin * cellSize,
+    x: layout.qrOffsetX * cellSize,
+    y: layout.qrOffsetY * cellSize,
     width: matrix.size * cellSize,
     height: matrix.size * cellSize,
   };
   const qrAreaInModules: RenderArea = {
-    x: options.margin,
-    y: options.margin,
+    x: layout.qrOffsetX,
+    y: layout.qrOffsetY,
     width: matrix.size,
     height: matrix.size,
   };
@@ -314,13 +790,15 @@ function renderStyledCanvas(
   const eyePaint = createCanvasPaint(context, options.styles.eyeColor, qrArea, options.darkColor);
   const pupilPaint = createCanvasPaint(context, options.styles.pupilColor, qrArea, options.darkColor);
 
+  drawCirclePatchPatternOnCanvas(context, matrix, options, layout, qrAreaInModules, cellSize, modulePaint);
+
   for (let row = 0; row < matrix.size; row += 1) {
     for (let col = 0; col < matrix.size; col += 1) {
       if (!matrix.modules[row][col] || getFinderPart(row, col, matrix.size)) {
         continue;
       }
-      const moduleX = options.margin + col;
-      const moduleY = options.margin + row;
+      const moduleX = qrAreaInModules.x + col;
+      const moduleY = qrAreaInModules.y + row;
       if (shouldSkipModuleForOverlayWithShape(moduleY, moduleX, overlayModuleBox, options.center, options.styles.moduleShape)) {
         continue;
       }
@@ -359,6 +837,7 @@ function renderStyledCanvas(
   }
 
   drawCenterOverlayOnCanvas(context, options, overlayModuleBox, cellSize, logoImage);
+  drawBorderOnCanvas(context, options.border, layout, cellSize);
 
   return canvas;
 }
@@ -658,12 +1137,152 @@ function buildPlainSvg(matrix: QrMatrix, options: NormalizedRenderOptions): stri
   ].join('');
 }
 
+function buildSvgRectRingPath(
+  outerX: number,
+  outerY: number,
+  outerSize: number,
+  innerX: number,
+  innerY: number,
+  innerSize: number,
+): string {
+  return [
+    `M${formatNumber(outerX)},${formatNumber(outerY)}h${formatNumber(outerSize)}v${formatNumber(outerSize)}h${formatNumber(-outerSize)}z`,
+    `M${formatNumber(innerX)},${formatNumber(innerY)}h${formatNumber(innerSize)}v${formatNumber(innerSize)}h${formatNumber(-innerSize)}z`,
+  ].join(' ');
+}
+
+function buildSvgCircleRingPath(centerX: number, centerY: number, outerRadius: number, innerRadius: number): string {
+  return [
+    `M${formatNumber(centerX + outerRadius)},${formatNumber(centerY)}`,
+    `A${formatNumber(outerRadius)},${formatNumber(outerRadius)} 0 1 0 ${formatNumber(centerX - outerRadius)},${formatNumber(centerY)}`,
+    `A${formatNumber(outerRadius)},${formatNumber(outerRadius)} 0 1 0 ${formatNumber(centerX + outerRadius)},${formatNumber(centerY)}`,
+    `M${formatNumber(centerX + innerRadius)},${formatNumber(centerY)}`,
+    `A${formatNumber(innerRadius)},${formatNumber(innerRadius)} 0 1 1 ${formatNumber(centerX - innerRadius)},${formatNumber(centerY)}`,
+    `A${formatNumber(innerRadius)},${formatNumber(innerRadius)} 0 1 1 ${formatNumber(centerX + innerRadius)},${formatNumber(centerY)}`,
+  ].join(' ');
+}
+
+function buildSvgOpacityAttribute(opacity: number): string {
+  if (opacity >= 1) {
+    return '';
+  }
+  return ` fill-opacity="${formatNumber(opacity)}"`;
+}
+
+function appendBorderSvg(elements: string[], border: NormalizedBorderOptions | undefined, layout: RenderLayout): void {
+  if (!border) {
+    return;
+  }
+
+  const layerWidths = resolveBorderLayerWidths(border);
+  const outerLayer = layerWidths.outer;
+  const innerLayer = layerWidths.inner;
+
+  if (layout.squareBorder) {
+    const square = layout.squareBorder;
+    const basePath = buildSvgRectRingPath(
+      square.outerX,
+      square.outerY,
+      square.outerSize,
+      square.innerX,
+      square.innerY,
+      square.innerSize,
+    );
+    elements.push(`<path d="${basePath}" fill="${escapeXml(border.color)}" fill-rule="evenodd"${buildSvgOpacityAttribute(border.opacity)}/>`);
+
+    if (border.outerColor && outerLayer > 0) {
+      const path = buildSvgRectRingPath(
+        square.outerX,
+        square.outerY,
+        square.outerSize,
+        square.outerX + outerLayer,
+        square.outerY + outerLayer,
+        square.outerSize - outerLayer * 2,
+      );
+      elements.push(`<path d="${path}" fill="${escapeXml(border.outerColor)}" fill-rule="evenodd"${buildSvgOpacityAttribute(border.outerOpacity)}/>`);
+    }
+
+    if (border.innerColor && innerLayer > 0) {
+      const path = buildSvgRectRingPath(
+        square.innerX - innerLayer,
+        square.innerY - innerLayer,
+        square.innerSize + innerLayer * 2,
+        square.innerX,
+        square.innerY,
+        square.innerSize,
+      );
+      elements.push(`<path d="${path}" fill="${escapeXml(border.innerColor)}" fill-rule="evenodd"${buildSvgOpacityAttribute(border.innerOpacity)}/>`);
+    }
+    return;
+  }
+
+  if (!layout.circleBorder) {
+    return;
+  }
+
+  const circle = layout.circleBorder;
+  const basePath = buildSvgCircleRingPath(circle.centerX, circle.centerY, circle.outerRadius, circle.innerRadius);
+  elements.push(`<path d="${basePath}" fill="${escapeXml(border.color)}" fill-rule="evenodd"${buildSvgOpacityAttribute(border.opacity)}/>`);
+
+  if (border.outerColor && outerLayer > 0) {
+    const path = buildSvgCircleRingPath(
+      circle.centerX,
+      circle.centerY,
+      circle.outerRadius,
+      circle.outerRadius - outerLayer,
+    );
+    elements.push(`<path d="${path}" fill="${escapeXml(border.outerColor)}" fill-rule="evenodd"${buildSvgOpacityAttribute(border.outerOpacity)}/>`);
+  }
+
+  if (border.innerColor && innerLayer > 0) {
+    const path = buildSvgCircleRingPath(
+      circle.centerX,
+      circle.centerY,
+      circle.innerRadius + innerLayer,
+      circle.innerRadius,
+    );
+    elements.push(`<path d="${path}" fill="${escapeXml(border.innerColor)}" fill-rule="evenodd"${buildSvgOpacityAttribute(border.innerOpacity)}/>`);
+  }
+}
+
+function appendCirclePatchPatternSvg(
+  elements: string[],
+  matrix: QrMatrix,
+  options: NormalizedRenderOptions,
+  layout: RenderLayout,
+  qrAreaInModules: RenderArea,
+  moduleFill: string,
+): void {
+  if (!layout.circleBorder || options.border?.prefill === false) {
+    return;
+  }
+
+  const patternCells = resolveCirclePatchPatternCells(matrix, layout, qrAreaInModules);
+  if (patternCells.length === 0) {
+    return;
+  }
+
+  const filled = new Set<string>(patternCells.map((cell) => getPatternCellKey(cell.row, cell.col)));
+  const tileSize = CIRCLE_PATCH_PATTERN_TILE_SCALE;
+  const tiles: string[] = [];
+
+  for (const cell of patternCells) {
+    const shape = options.styles.moduleShape;
+    const radii = getCirclePatchPatternRadii(shape, filled, cell.row, cell.col, tileSize);
+    tiles.push(buildSvgShapeElement(shape, cell.x, cell.y, tileSize, moduleFill, cell.row, cell.col, radii));
+  }
+
+  const opacityAttribute = buildSvgOpacityAttribute(CIRCLE_PATCH_PATTERN_OPACITY);
+  elements.push(`<g${opacityAttribute}>${tiles.join('')}</g>`);
+}
+
 function buildStyledSvg(matrix: QrMatrix, options: NormalizedRenderOptions): string {
-  const totalSize = matrix.size + options.margin * 2;
+  const layout = resolveRenderLayout(matrix.size, options);
+  const totalSize = layout.totalModules;
   const scaledSize = totalSize * options.scale;
   const qrArea: RenderArea = {
-    x: options.margin,
-    y: options.margin,
+    x: layout.qrOffsetX,
+    y: layout.qrOffsetY,
     width: matrix.size,
     height: matrix.size,
   };
@@ -676,14 +1295,15 @@ function buildStyledSvg(matrix: QrMatrix, options: NormalizedRenderOptions): str
   const pupilFill = buildSvgPaint(options.styles.pupilColor, qrArea, defs, options.darkColor);
 
   elements.push(`<rect width="${formatNumber(totalSize)}" height="${formatNumber(totalSize)}" fill="${escapeXml(options.lightColor)}"/>`);
+  appendCirclePatchPatternSvg(elements, matrix, options, layout, qrArea, moduleFill);
 
   for (let row = 0; row < matrix.size; row += 1) {
     for (let col = 0; col < matrix.size; col += 1) {
       if (!matrix.modules[row][col] || getFinderPart(row, col, matrix.size)) {
         continue;
       }
-      const moduleX = options.margin + col;
-      const moduleY = options.margin + row;
+      const moduleX = qrArea.x + col;
+      const moduleY = qrArea.y + row;
       if (shouldSkipModuleForOverlayWithShape(moduleY, moduleX, overlayModuleBox, options.center, options.styles.moduleShape)) {
         continue;
       }
@@ -715,6 +1335,7 @@ function buildStyledSvg(matrix: QrMatrix, options: NormalizedRenderOptions): str
   }
 
   appendCenterOverlaySvg(elements, options, overlayModuleBox);
+  appendBorderSvg(elements, options.border, layout);
 
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${formatNumber(totalSize)} ${formatNumber(totalSize)}" width="${formatNumber(scaledSize)}" height="${formatNumber(scaledSize)}">`,
