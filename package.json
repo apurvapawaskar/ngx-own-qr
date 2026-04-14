@@ -1,7 +1,15 @@
 {
   "name": "ngx-own-qr",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "description": "Angular QR generator and scanner library with in-house encoding, rendering, and decoding.",
+  "homepage": "https://ngx-own-qr.apurvapawaskar.in/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/apurvapawaskar/ngx-own-qr.git"
+  },
+  "bugs": {
+    "url": "https://github.com/apurvapawaskar/ngx-own-qr/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "license": "MIT",
